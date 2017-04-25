@@ -60,6 +60,18 @@
          }} // sshagent
         }} // stage
       }} // node
+      
+- project:
+    name: "bug/256 Testing"
+    jobs:
+      - 'OnMetal-Multi-Node-AIO_{series}-{context}-{trigger}':
+          series: master
+          context: issuecreationtest
+          trigger: "post-merge"
+          DEFAULT_IMAGE: "16.04.2"
+          branch: master
+          OPENSTACK_ANSIBLE_BRANCH: "stable/newton"
+          TEST_SET: "scenario smoke"
 
 - job-template:
     name: 'OnMetal-Multi-Node-AIO_{series}-{context}-{trigger}'

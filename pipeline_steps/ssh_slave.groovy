@@ -23,7 +23,6 @@ def connect(){
         dir("rpc-gating/playbooks"){
           common.venvPlaybook(
             playbooks: ["setup_jenkins_slave.yml"],
-            venv: ".venv",
             args: [
               "-i inventory",
               "--limit job_nodes",
@@ -51,7 +50,7 @@ def destroy(){
       ]){
         dir("rpc-gating/scripts"){
           sh """
-            . ../playbooks/.venv/bin/activate
+            . ${env.WORKSPACE}/.venv/bin/activate
             pip install 'pip==9.0.1'
             pip install -c ../constraints.txt jenkinsapi
             python jenkins_node.py \

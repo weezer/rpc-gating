@@ -1,0 +1,18 @@
+- job:
+    name: '_test_issue_creation'
+    project-type: workflow
+    parameters:
+      - rpc_gating_params
+    dsl: |
+      node(){
+        dir('rpc-gating'){
+          git url: env.RPC_GATING_REPO, branch: env.RPC_GATING_BRANCH
+          common = load 'pipeline_steps/common.groovy'
+          github = load 'pipeline_steps/github.groovy'
+        }
+        common.install_ansible()
+        github.create_issue(
+          env.BUILD_TAG,
+          env.BUILD_URL
+        )
+      }

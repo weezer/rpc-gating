@@ -36,7 +36,7 @@ def deploy_sh(Map args) {
             }
             sh """#!/bin/bash
             sudo ssh -T -oStrictHostKeyChecking=no ${args.vm} \
-              '${export_vars} cd /opt/rpc-openstack; scripts/deploy.sh'
+              '${export_vars} cd /opt/rpc-openstack; FORKS=5; scripts/deploy.sh'
             """
           } // if vm
         } // ansiColor
@@ -59,7 +59,7 @@ void create_test_resource_load(Integer servers, Integer networks, Integer volume
 }
 
 def upgrade(String stage_name, String upgrade_script, List env_vars,
-            String branch = "auto", String dest = "/opt") {
+            String branch = "auto", String dest = "/opt", String vm = '') {
   common.conditionalStage(
     stage_name: stage_name,
     stage: {
@@ -76,11 +76,22 @@ def upgrade(String stage_name, String upgrade_script, List env_vars,
             env.GENERATE_TEST_VOLUMES as Integer,
           )
         }
-        dir("/opt/rpc-openstack"){
-          sh """
-            scripts/$upgrade_script
-          """
-        } // dir
+        if (vm.empty){
+          dir("/opt/rpc-openstack"){
+            sh """
+              scripts/$upgrade_script
+            """
+          } // dir
+        } else {
+            export_vars = ""
+            for ( e in environment_vars ) {
+              export_vars += "export ${e}; "
+            }
+            sh """#!/bin/bash
+            sudo ssh -T -oStrictHostKeyChecking=no ${vm} \
+              '${export_vars} cd /opt/rpc-openstack; scripts/$upgrade_script'
+            """
+        } // if vm
       } // withEnv
     } // stage
   ) // conditionalStage
@@ -101,10 +112,18 @@ def upgrade_leapfrog(Map args) {
   if (env.SERIES == "kilo" && env.TRIGGER == "pr"){
     branch="newton-14.1"
   }
-  upgrade("Leapfrog Upgrade",
-          "leapfrog/ubuntu14-leapfrog.sh",
-          args.environment_vars,
-          branch)
+  if (!('vm' in args)){
+    upgrade("Leapfrog Upgrade",
+            "leapfrog/ubuntu14-leapfrog.sh",
+            args.environment_vars,
+            branch)
+  } else {
+    upgrade("Leapfrog Upgrade",
+            "leapfrog/ubuntu14-leapfrog.sh",
+            args.environment_vars,
+            branch,
+            args.vm)
+  }
 
 }
 

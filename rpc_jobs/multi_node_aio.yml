@@ -237,7 +237,10 @@
           REGION: "IAD"
       - rpc_repo_params:
           RPC_BRANCH: "{branch}"
-          UPGRADE_TO_REF: "{UPGRADE_TO_REF}"
+      - string:
+          name: "UPGRADE_TO_REF"
+          default: "{UPGRADE_TO_REF}"
+          description: "An tag/sha/ref to upgrade to"
       - osa_ops_params:
           DEFAULT_IMAGE: "{DEFAULT_IMAGE}"
           DEFAULT_KERNEL: "3.13.0-98"

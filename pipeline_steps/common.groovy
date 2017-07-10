@@ -1,38 +1,75 @@
 import groovy.json.JsonSlurperClassic
 import groovy.json.JsonOutput
 
-// Install ansible on a jenkins slave
-def install_ansible(){
+
+def void create_workspace_venv(){
+  print "common.create_workspace_venv"
   sh """#!/bin/bash -xe
     cd ${env.WORKSPACE}
+
+    # Create venv
     if [[ ! -d ".venv" ]]; then
       if ! which virtualenv; then
         pip install virtualenv
       fi
       if which scl
       then
+        # redhat/centos
         source /opt/rh/python27/enable
         virtualenv --python=/opt/rh/python27/root/usr/bin/python .venv
+        # hack the selinux module into the venv
+        cp -r /usr/lib64/python2.6/site-packages/selinux .venv/lib64/python2.7/site-packages/ ||:
       else
         virtualenv .venv
       fi
     fi
-    # hack the selinux module into the venv
-    cp -r /usr/lib64/python2.6/site-packages/selinux .venv/lib64/python2.7/site-packages/ ||:
+
+    # Install Pip
     source .venv/bin/activate
 
-    # These pip commands cannot be combined into one.
-    pip install -U six packaging appdirs
-    pip install -U setuptools
-    pip install 'pip==9.0.1'
+    # UG-613 change TMPDIR to directory with more space
+    export TMPDIR="/var/lib/jenkins/tmp"
+
+    # UG-612 Install pip, setuptools, and wheel on the host
+    CURL_CMD="curl --silent --show-error --retry 5"
+    OUTPUT_FILE="get-pip.py"
+    \${CURL_CMD} https://bootstrap.pypa.io/get-pip.py > \${OUTPUT_FILE} ||\
+    \${CURL_CMD} https://raw.githubusercontent.com/pypa/get-pip/master/get-pip.py > \${OUTPUT_FILE}
+    python \${OUTPUT_FILE} --isolated pip setuptools wheel -c rpc-gating/constraints.txt
+
+    # Install rpc-gating requirements
     pip install \
+      --isolated \
       -U \
       -c rpc-gating/constraints.txt \
       -r rpc-gating/requirements.txt
+  """
+}
 
+def install_ansible_roles(){
+  print "common.install_ansible_roles"
+  sh """#!/bin/bash -xe
+    cd ${env.WORKSPACE}
+    . .venv/bin/activate
     mkdir -p rpc-gating/playbooks/roles
     ansible-galaxy install -r rpc-gating/role_requirements.yml -p rpc-gating/playbooks/roles
   """
+}
+
+// Install ansible on a jenkins slave
+def install_ansible(){
+  create_workspace_venv()
+  install_ansible_roles()
+}
+
+// check if a venv already exists before running create_workspace_venv
+// useful to avoid re-running venv creation and pip package installation
+def create_workspace_venv_if_doesnt_exist(){
+  dir(WORKSPACE){
+    if (!fileExists('.venv')){
+      create_workspace_venv()
+    }
+  }
 }
 
 /* Run ansible-playbooks within a venev
@@ -61,7 +98,8 @@ def venvPlaybook(Map args){
         sh """#!/bin/bash -x
           which scl && source /opt/rh/python27/enable
           . ${env.WORKSPACE}/.venv/bin/activate
-          ansible-playbook -v ${args.args.join(' ')} -e@${vars_file} ${playbook}
+          export ANSIBLE_HOST_KEY_CHECKING=False
+          ansible-playbook ${args.args.join(' ')} -e@${vars_file} ${playbook}
         """
       } //for
     } //color
@@ -237,7 +275,7 @@ def conditionalStep(Map args){
  * Arguments:
  *  string: the string to process
  */
-def acronym(Map args){
+def String acronym(Map args){
   acronym=""
   words=args.string.split("[-_ ]")
   for (def i=0; i<words.size(); i++){
@@ -246,12 +284,17 @@ def acronym(Map args){
   return acronym
 }
 
-def gen_instance_name(){
+def String rand_int_str(max=0xFFFF, base=16){
+  return Integer.toString(Math.abs((new Random()).nextInt(max)), base)
+}
+
+def String gen_instance_name(String prefix="AUTO"){
   if (env.INSTANCE_NAME == "AUTO"){
-    job_name_acronym = common.acronym(string: env.JOB_NAME)
+    if (prefix == "AUTO"){
+      prefix = common.acronym(string: env.JOB_NAME)
+    }
     //4 digit hex string to avoid name colisions
-    rand_str = Integer.toString(Math.abs((new Random()).nextInt(0xFFFF)), 16)
-    instance_name = "${job_name_acronym}-${env.BUILD_NUMBER}-${rand_str}"
+    instance_name = "${prefix}-${env.BUILD_NUMBER}-${rand_int_str()}"
   }
   else {
     instance_name = env.INSTANCE_NAME
@@ -361,7 +404,7 @@ def prepareConfigs(Map args){
       dir("rpc-gating/playbooks"){
         common.install_ansible()
         withCredentials(common.get_cloud_creds()) {
-          List maas_vars = maas.get_maas_token_and_url(env.PUBCLOUD_USERNAME, env.PUBCLOUD_API_KEY, env.REGION)
+          List maas_vars = maas.get_maas_token_and_url()
           withEnv(maas_vars) {
             common.venvPlaybook(
               playbooks: ["aio_config.yml"],
@@ -421,22 +464,28 @@ def docker_cache_workaround(){
 }
 
 def is_doc_update_pr(git_dir) {
-  is_doc_update_pr = false
   if (env.ghprbPullId != null) {
     dir(git_dir) {
-      def output = sh(script: """#!/bin/bash
-      git show --stat=400,400 | awk '/\\|/{print \$1}' \
-        | egrep -v -e '.*md\$' -e '.*rst\$' -e '^releasenotes/' \
-        || echo "Skipping build as only documentation changes were detected"
-      """, returnStdout: true)
-      print output
-      is_doc_update_pr = output.contains("Skipping build as only documentation changes were detected")
+      def rc = sh(
+        script: """#!/bin/bash
+          set -xeu
+          git status
+          git show --stat=400,400 | awk '/\\|/{print \$1}' \
+            | egrep -v -e '.*md\$' -e '.*rst\$' -e '^releasenotes/'
+        """,
+        returnStatus: true
+      )
+      if (rc==0){
+        print "Not a documentation only change or not triggered by a pull request. Continuing..."
+        return false
+      }else if(rc==1){
+        print "Skipping build as only documentation changes were detected"
+        return true
+      }else if(rc==128){
+        throw new Exception("Directory is not a git repo, cannot check if changes are doc only")
+      }
     }
   }
-  if(!is_doc_update_pr){
-    print "Not a documentation only change or not triggered by a pull request. Continuing..."
-  }
-  return is_doc_update_pr
 }
 
 /* Look for JIRA issue key in commit messages for commits in the source branch
@@ -445,24 +494,21 @@ def is_doc_update_pr(git_dir) {
  * builder and so can only be used for PR triggered jobs
  */
 def get_jira_issue_key(repo_path="rpc-openstack"){
-  def key_regex = "^[a-zA-Z][a-zA-Z0-9_]+-[1-9][0-9]*"
+  def key_regex = "[a-zA-Z][a-zA-Z0-9_]+-[1-9][0-9]*"
   dir(repo_path){
-    commit_titles = sh(
+    commits = sh(
       returnStdout: true,
-      script: "git log --pretty=%s origin/${ghprbTargetBranch}..${ghprbSourceBranch}").split('\n')
-    print("looking for Jira issue keys in the following commits: ${commit_titles}")
-    for (def i=0; i<=commit_titles.size(); i++){
-      try{
-        key = (commit_titles[i] =~ key_regex)[0]
-        print ("Found Jira Issue Key: ${key}")
-        return key
-      } catch (e){
-        continue
-      }
+      script: """
+        git log --pretty=%B upstream/${ghprbTargetBranch}..${ghprbSourceBranch}""")
+    print("looking for Jira issue keys in the following commits: ${commits}")
+    try{
+      key = (commits =~ key_regex)[0]
+      print ("First Found Jira Issue Key: ${key}")
+      return key
+    } catch (e){
+      throw new Exception("""
+  No JIRA Issue key were found in commits ${repo_path}:${ghprbSourceBranch}""")
     }
-    throw new Exception("""
-Attempting to add a comment to the relevant JIRA issue, but a JIRA Issue key
-was not found in any of the commits introduced by ${repo_path}:${ghprbSourceBranch}""")
   }
 }
 
@@ -482,6 +528,74 @@ def safe_jira_comment(body, repo_path="rpc-openstack"){
   } catch (e){
     print ("Error while attempting to add a build result comment to a JIRA issue: ${e}")
   }
+}
+
+def delete_workspace() {
+  dir(env.WORKSPACE) {
+    print "Deleting workspace..."
+    deleteDir()
+  }
+}
+
+def create_jira_issue(project="UG", tag=env.BUILD_TAG, link=env.BUILD_URL, type="Task"){
+  withCredentials([
+    usernamePassword(
+      credentialsId: "jira_user_pass",
+      usernameVariable: "JIRA_USER",
+      passwordVariable: "JIRA_PASS"
+    )
+  ]){
+    sh """#!/bin/bash -xe
+      cd ${env.WORKSPACE}
+      . .venv/bin/activate
+      python rpc-gating/scripts/jirautils.py create_issue\
+        --tag '$tag'\
+        --link '$link'\
+        --project '$project'\
+        --user '$JIRA_USER' \
+        --password '$JIRA_PASS' \
+        --type '$type'
+    """
+  }
+}
+
+String get_current_git_sha(String repo_path) {
+  String sha = ""
+  dir(repo_path) {
+    sha = sh(
+      returnStdout: true,
+      script: "git rev-parse --verify HEAD",
+    ).trim()
+  }
+  print("Current SHA for '${repo_path}' is '${sha}'.")
+  return sha
+}
+
+// Create inventory file. Useful for running part of a job against
+// an existing node, where the job expects an inventory file to
+// have been created by the resource allocation step.
+void drop_inventory_file(String content,
+                         String path='rpc-gating/playbooks/inventory/hosts'){
+    dir(env.WORKSPACE){
+      writeFile file: path, text: content
+    }
+}
+
+// Conditional step to drop manually created inventory file
+void override_inventory(){
+  conditionalStep(
+    step_name: "Override Inventory",
+    step:{
+        // This is usually done by the allocate step
+        common.install_ansible()
+        if (env.OVERRIDE_INVENTORY_PATH == null){
+          inventory_path = 'rpc-gating/playbooks/inventory/hosts'
+        } else{
+          inventory_path = env.OVERRIDE_INVENTORY_PATH
+        }
+        drop_inventory_file(env.INVENTORY, inventory_path)
+    }
+  )
 }
 
 return this

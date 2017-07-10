@@ -28,24 +28,16 @@ def get_rpc_repo_creds(){
 }
 
 def apt() {
-  common.conditionalStage(
-    stage_name: "Build Apt Artifacts",
-    stage: {
-      withCredentials(get_rpc_repo_creds()) {
-        common.prepareRpcGit()
-        if(common.is_doc_update_pr("${env.WORKSPACE}/rpc-openstack")){
-          return
-        }
-        ansiColor('xterm') {
-          dir("/opt/rpc-openstack/") {
-            sh """#!/bin/bash
-            scripts/artifacts-building/apt/build-apt-artifacts.sh
-            """
-          } // dir
-        } // ansiColor
-      } // withCredentials
-    } // stage
-  ) // conditionalStage
+  withCredentials(get_rpc_repo_creds()) {
+    common.prepareRpcGit()
+    ansiColor('xterm') {
+      dir("/opt/rpc-openstack/") {
+        sh """#!/bin/bash
+        scripts/artifacts-building/apt/build-apt-artifacts.sh
+        """
+      } // dir
+    } // ansiColor
+  } // withCredentials
 }
 
 def git() {
@@ -56,9 +48,6 @@ def git() {
         try {
           withCredentials(get_rpc_repo_creds()) {
             common.prepareRpcGit()
-            if(common.is_doc_update_pr("${env.WORKSPACE}/rpc-openstack")){
-              return
-            }
             ansiColor('xterm') {
               dir("/opt/rpc-openstack/") {
                 sh """#!/bin/bash
@@ -86,9 +75,6 @@ def python() {
         try {
           withCredentials(get_rpc_repo_creds()) {
             common.prepareRpcGit()
-            if(common.is_doc_update_pr("${env.WORKSPACE}/rpc-openstack")){
-              return
-            }
             ansiColor('xterm') {
               dir("/opt/rpc-openstack/") {
                 sh """#!/bin/bash
@@ -116,9 +102,6 @@ def container() {
         try {
           withCredentials(get_rpc_repo_creds()) {
             common.prepareRpcGit()
-            if(common.is_doc_update_pr("${env.WORKSPACE}/rpc-openstack")){
-              return
-            }
             ansiColor('xterm') {
               dir("/opt/rpc-openstack/") {
                 sh """#!/bin/bash

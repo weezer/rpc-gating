@@ -3,9 +3,12 @@
     # Note: branch is the branch for periodics to build
     #       branches is the branch pattern to match for PR Jobs.
     series:
-      - artifacts:
-          branch: artifacts
-          branches: "artifacts.*"
+      - master:
+          branch: master
+          branches: "master"
+      - newton:
+          branch: newton-14.1
+          branches: "newton-14.1.*"
     image:
       - trusty:
           IMAGE: "Ubuntu 14.04.5 LTS prepared for RPC deployment"
@@ -13,10 +16,13 @@
           IMAGE: "Ubuntu 16.04.2 LTS prepared for RPC deployment"
     context:
       - Git
-      - Apt
+      - Apt:
+          allow_concurrent: false
+          PULL_FROM_MIRROR: "NO"
       - Python
       - Container
-      - Pipeline
+      - Pipeline:
+          allow_concurrent: false
     ztrigger:
       - pr:
           CRON: ""
@@ -31,6 +37,11 @@
           PUSH_TO_MIRROR: "YES"
           NUM_TO_KEEP: 10
     exclude:
+      # The periodic jobs must only execute the pipeline in order
+      # to build new artifacts (for new releases) and to ensure
+      # that the pipeline works properly. The PR jobs execute each
+      # part of the pipeline in parallel so that results are
+      # returned as quickly as possible to the developer.
       - context: Git
         ztrigger: periodic
       - context: Apt
@@ -41,6 +52,10 @@
         ztrigger: periodic
       - context: Pipeline
         ztrigger: pr
+      # Trusty artifacts are not required after Newton
+      # as Trusty is no longer a supported distro.
+      - series: master
+        image: trusty
     jobs:
       - 'RPC-Artifact-Build_{series}-{image}-{context}-{ztrigger}'
 
@@ -55,14 +70,17 @@
       Connect Slave,
       Cleanup,
       Destroy Slave
-    branch: artifacts-14.0
+    branch: master
+    allow_concurrent: true
+    artifacts_flavor: "general1-4"
+    PULL_FROM_MIRROR: "YES"
     PUSH_TO_MIRROR: "NO"
     NUM_TO_KEEP: 30
 
     # TEMPLATE
     name: 'RPC-Artifact-Build_{series}-{image}-{context}-{ztrigger}'
     project-type: workflow
-    concurrent: false
+    concurrent: {allow_concurrent}
     properties:
       - build-discarder:
           num-to-keep: "{NUM_TO_KEEP}"
@@ -72,9 +90,9 @@
       - rpc_repo_params:
          RPC_BRANCH: "{branch}"
       - rpc_gating_params
-      - single_use_slave_params:
+      - instance_params:
          IMAGE: "{IMAGE}"
-         FLAVOR: "{FLAVOR}"
+         FLAVOR: "{artifacts_flavor}"
          REGION: "{REGION}"
       - string:
           name: ANSIBLE_PARAMETERS
@@ -82,7 +100,7 @@
           description: "Change the Ansible parameters for the playbook execution."
       - string:
           name: PULL_FROM_MIRROR
-          default: "YES"
+          default: "{PULL_FROM_MIRROR}"
           description: "Set this to NO to skip downloading existing data from rpc-repo. This may cause the loss of existing artifacts on rpc-repo. USE WITH CAUTION!"
       - string:
           name: REPLACE_ARTIFACTS
@@ -121,26 +139,46 @@
           status-context: 'CIT/artifact-{image}-{context}'
           cancel-builds-on-update: true
     dsl: |
-      node('ArtifactBuilder2') {{
-        dir("rpc-gating") {{
-            git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
-            common = load 'pipeline_steps/common.groovy'
-            artifact_build = load 'pipeline_steps/artifact_build.groovy'
-        }}
-        artifact_build.apt()
-      }} // node ArtifactBuilder2
+      // CIT slave
       node() {{
+        currentBuild.result = "SUCCESS"
         dir("rpc-gating") {{
-            git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
-            common = load 'pipeline_steps/common.groovy'
-            pubcloud = load 'pipeline_steps/pubcloud.groovy'
-            artifact_build = load 'pipeline_steps/artifact_build.groovy'
+          git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
+          common = load 'pipeline_steps/common.groovy'
+          pubcloud = load 'pipeline_steps/pubcloud.groovy'
+          artifact_build = load 'pipeline_steps/artifact_build.groovy'
         }}
         // We need to checkout the rpc-openstack repo on the CIT Slave
-        // so that we can cater for builds on the more restricted images
-        // used for artifact-based builds.
+        // so that we can check whether the patch is a docs-only patch
+        // before allocating resources unnecessarily.
         common.prepareRpcGit("auto", env.WORKSPACE)
-        artifact_build.git()
-        artifact_build.python()
-        artifact_build.container()
+        if(common.is_doc_update_pr("${{env.WORKSPACE}}/rpc-openstack")){{
+          return
+        }}
+        try {{
+          common.conditionalStage(
+            stage_name: "Build Apt Artifacts",
+            stage: {{
+              node('ArtifactBuilder2') {{
+                dir("rpc-gating") {{
+                  git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
+                  common = load 'pipeline_steps/common.groovy'
+                  artifact_build = load 'pipeline_steps/artifact_build.groovy'
+                }}
+                artifact_build.apt()
+              }} // node ArtifactBuilder2
+            }} // stage
+          ) // conditionalStage
+          // continuing on CIT slave
+          artifact_build.git()
+          artifact_build.python()
+          artifact_build.container()
+        }} catch (e) {{
+          print e
+          currentBuild.result = "FAILURE"
+          throw e
+        }} finally {{
+          common.safe_jira_comment("${{currentBuild.result}}: [${{env.BUILD_TAG}}|${{env.BUILD_URL}}]")
+          common.delete_workspace()
+        }}
       }} // node

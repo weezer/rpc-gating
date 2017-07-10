@@ -3,16 +3,20 @@
     series:
       - mitaka:
           branch: mitaka-13.1
-          OPENSTACK_ANSIBLE_BRANCH: "stable/mitaka"
-          TEST_SET: "scenario defcore api heat_api smoke"
-      - newton:
+          USER_VARS: |
+            tempest_test_sets: 'scenario defcore api heat_api smoke'
+      - newton140:
           branch: newton-14.0
-          OPENSTACK_ANSIBLE_BRANCH: "stable/newton"
-          TEST_SET: "all"
+          USER_VARS: |
+            tempest_test_sets: 'all'
+      - newton141:
+          branch: newton-14.1
+          USER_VARS: |
+            tempest_test_sets: 'all'
       - master:
           branch: master
-          OPENSTACK_ANSIBLE_BRANCH: "stable/newton"
-          TEST_SET: "all"
+          USER_VARS: |
+            tempest_test_sets: 'all'
     context:
       - xenial:
           DEFAULT_IMAGE: "16.04.2"
@@ -29,6 +33,24 @@
     jobs:
       - 'OnMetal-Multi-Node-AIO_{series}-{context}-{trigger}'
       - 'OnMetal-Multi-Node-AIO-Merge-Trigger_{series}'
+
+- project:
+    name: 'Leapfrog-Multi-Node-AIO-Jobs'
+    series:
+      - kilo:
+          branch: kilo
+          branches: "newton-14.1.*"
+          UPGRADE_TO_REF: "newton-14.1"
+          USER_VARS: |
+            tempest_test_sets: 'all'
+    context:
+      - trusty:
+          DEFAULT_IMAGE: "14.04.5"
+    trigger:
+      - periodic:
+          CRON: "H H(0-8) * * 1-5"
+    jobs:
+      - 'Leapfrog-OnMetal-Multi-Node-AIO_{series}-{context}-{trigger}'
 
 - job-template:
     name: 'OnMetal-Multi-Node-AIO-Merge-Trigger_{series}'
@@ -72,21 +94,22 @@
     triggers:
       - timed: "{CRON}"
     parameters:
+      - kibana_selenium_params:
+          KIBANA_SELENIUM_BRANCH: "{branch}"
       - rpc_gating_params
-      - tempest_params:
-          TEMPEST_TEST_SETS: "{TEST_SET}"
-          RUN_TEMPEST_OPTS: ""
-          TESTR_OPTS: "--concurrency 3"
-      - single_use_slave_params:
+      - instance_params:
           IMAGE: "OnMetal - Ubuntu 14.04 LTS (Trusty Tahr)"
           FLAVOR: "onmetal-io1"
           REGION: "IAD"
       - rpc_repo_params:
           RPC_BRANCH: "{branch}"
       - osa_ops_params:
-          OPENSTACK_ANSIBLE_BRANCH: "{OPENSTACK_ANSIBLE_BRANCH}"
           DEFAULT_IMAGE: "{DEFAULT_IMAGE}"
           DATA_DISK_DEVICE: "sdb"
+      - text:
+          name: "USER_VARS"
+          default: "{USER_VARS}"
+          description: "OSA/RPC USER_VARS to inject for this build"
       - string:
           name: STAGES
           default: |
@@ -123,6 +146,7 @@
           dir("rpc-gating"){{
             git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
             pubCloudSlave = load 'pipeline_steps/pubcloud.groovy'
+            ssh_slave = load 'pipeline_steps/ssh_slave.groovy'
             common = load 'pipeline_steps/common.groovy'
             multi_node_aio_prepare = load 'pipeline_steps/multi_node_aio_prepare.groovy'
             deploy = load 'pipeline_steps/deploy.groovy'
@@ -134,12 +158,19 @@
             github = load 'pipeline_steps/github.groovy'
           }}
           instance_name = common.gen_instance_name()
+          deploy_node = null
           pubCloudSlave.getPubCloudSlave(instance_name: instance_name)
 
           node(instance_name){{
             multi_node_aio_prepare.prepare()
+            instance_ip = sh(script: "ip route get 1 | awk '{{print \$NF;exit}}'", returnStdout: true)
+          }} // public cloud node
+
+          deploy_node = "${{instance_name}}-deploy-vm"
+          multi_node_aio_prepare.connect_deploy_node(deploy_node, instance_ip)
+
+          node(deploy_node){{
             deploy.deploy_sh(
-              vm: "deploy1",
               environment_vars: [
                 "DEPLOY_HAPROXY=yes",
                 "DEPLOY_ELK=yes",
@@ -148,7 +179,6 @@
                 "DEPLOY_MAAS=no"
                 ]
             ) // deploy_sh
-            multi_node_aio_prepare.multi_node_aio_networking()
             dir("rpc-gating"){{
               // Checkout rpc-gating repo to avoid race conditions in parallel steps
               git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
@@ -156,20 +186,152 @@
             parallel(
               "maas": {{
                 maas.prepare(instance_name: instance_name)
-                maas.deploy("deploy1")
-                maas.verify("deploy1")
+                maas.deploy()
+                maas.verify()
               }},
               "tempest": {{
-                tempest.tempest("infra1", "deploy1")
+                tempest.tempest()
               }},
               "horizon": {{
                 horizon.horizon_integration()
               }},
               "kibana": {{
-                kibana.kibana(env.RPC_BRANCH, "deploy1")
+                kibana.kibana(env.KIBANA_SELENIUM_BRANCH)
               }},
               "holland": {{
-                holland.holland("deploy1")
+                holland.holland()
+              }}
+            ) // parallel
+          }}// deploy node on public cloud node
+        }} catch (e){{
+            currentBuild.result = 'FAILURE'
+            if("{trigger}" == "post-merge"){{
+              common.create_jira_issue()
+            }}
+            throw e
+        }} finally {{
+            pubCloudSlave.delPubCloudSlave(instance_name: instance_name)
+            maas.entity_cleanup(instance_name: instance_name)
+            if(deploy_node != null){{
+              ssh_slave.destroy(deploy_node)
+            }}
+            common.delete_workspace()
+        }}
+      }} // cit node
+
+- job-template:
+    name: 'Leapfrog-OnMetal-Multi-Node-AIO_{series}-{context}-{trigger}'
+    project-type: workflow
+    properties:
+      - build-discarder:
+          days-to-keep: 7
+      - rpc-openstack-github
+    concurrent: true
+    triggers:
+      - timed: "{CRON}"
+    parameters:
+      - rpc_gating_params
+      - instance_params:
+          IMAGE: "OnMetal - Ubuntu 14.04 LTS (Trusty Tahr)"
+          FLAVOR: "onmetal-io1"
+          REGION: "IAD"
+      - rpc_repo_params:
+          RPC_BRANCH: "{branch}"
+      - string:
+          name: "UPGRADE_TO_REF"
+          default: "{UPGRADE_TO_REF}"
+          description: "An tag/sha/ref to upgrade to"
+      - osa_ops_params:
+          DEFAULT_IMAGE: "{DEFAULT_IMAGE}"
+          DEFAULT_KERNEL: "3.13.0-98"
+          DATA_DISK_DEVICE: "sdb"
+      - text:
+          name: "USER_VARS"
+          default: "{USER_VARS}"
+          description: "OSA/RPC USER_VARS to inject for this build"
+      - string:
+          name: STAGES
+          default: |
+            Allocate Resources, Connect Slave, Prepare Multi-Node AIO,
+            Prepare RPC Configs, Deploy RPC w/ Script,
+            Leapfrog Upgrade, Install Tempest, Tempest Tests, Holland,
+            Verify MaaS, Prepare Kibana Selenium, Kibana Tests, Cleanup,
+            Destroy Slave
+          description: |
+            Pipeline stages to run CSV. Note that this list does not influence execution order.
+            Options:
+              Allocate Resources
+              Connect Slave
+              Prepare Multi-Node AIO
+              Prepare RPC Configs
+              Deploy RPC w/ Script
+              Leapfrog Upgrade
+              Install Tempest
+              Tempest Tests
+              Holland
+              Verify MaaS
+              Prepare Kibana Selenium
+              Kibana Tests
+              Pause (use to hold instance for investigation before cleanup)
+              Cleanup
+              Destroy Slave
+
+    dsl: |
+      node(){{
+        try {{
+          dir("rpc-gating"){{
+            git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
+            pubCloudSlave = load 'pipeline_steps/pubcloud.groovy'
+            ssh_slave = load 'pipeline_steps/ssh_slave.groovy'
+            common = load 'pipeline_steps/common.groovy'
+            multi_node_aio_prepare = load 'pipeline_steps/multi_node_aio_prepare.groovy'
+            deploy = load 'pipeline_steps/deploy.groovy'
+            maas = load 'pipeline_steps/maas.groovy'
+            tempest = load 'pipeline_steps/tempest.groovy'
+            horizon = load 'pipeline_steps/horizon.groovy'
+            kibana = load 'pipeline_steps/kibana.groovy'
+            holland = load 'pipeline_steps/holland.groovy'
+            github = load 'pipeline_steps/github.groovy'
+          }}
+          instance_name = common.gen_instance_name()
+          deploy_node = null
+          pubCloudSlave.getPubCloudSlave(instance_name: instance_name)
+
+          node(instance_name){{
+            multi_node_aio_prepare.prepare()
+            instance_ip = sh(script: "ip route get 1 | awk '{{print \$NF;exit}}'", returnStdout: true)
+          }} // public cloud node
+
+          deploy_node = "${{instance_name}}-deploy-vm"
+          multi_node_aio_prepare.connect_deploy_node(deploy_node, instance_ip)
+
+          node(deploy_node){{
+            deploy.deploy_sh(
+              environment_vars: [
+                "DEPLOY_HAPROXY=yes",
+                "DEPLOY_ELK=yes",
+                "DEPLOY_TEMPEST=no",
+                "DEPLOY_AIO=no",
+                "DEPLOY_MAAS=no",
+                ]
+            ) // deploy_sh
+            maas.prepare(instance_name: instance_name)
+            maas.deploy()
+            //upgrade the repo into UPGRADE_TO_REF branch
+            common.prepareRpcGit(env.UPGRADE_TO_REF)
+            sh """/bin/bash
+            scp -r -o StrictHostKeyChecking=no /opt/rpc-openstack deploy1:/opt/
+            """
+            deploy.upgrade_leapfrog(environment_vars: environment_vars)
+            parallel(
+              "maas": {{
+                maas.verify()
+              }},
+              "tempest": {{
+                tempest.tempest()
+              }},
+              "holland": {{
+                holland.holland()
               }}
             ) // parallel
           }}// public cloud node
@@ -183,5 +345,9 @@
         }} finally {{
             pubCloudSlave.delPubCloudSlave(instance_name: instance_name)
             maas.entity_cleanup(instance_name: instance_name)
+            if(deploy_node != null){{
+              ssh_slave.destroy(deploy_node)
+            }}
+            common.delete_workspace()
         }}
       }} // cit node

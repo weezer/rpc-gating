@@ -28,11 +28,15 @@ def create(Map args){
             ],
             vars: args
           )
-        } // withEnv
-      } // directory
-    } //withCredentials
-  } // withEnv
-} //call
+        }
+        stash (
+          name: "pubcloud_inventory",
+          include: "inventory/hosts"
+        )
+      }
+    }
+  }
+}
 
 
 /* Remove public cloud instances
@@ -100,7 +104,7 @@ def delPubCloudSlave(Map args){
       )
     } //stage
   ) //conditionalStage
-  ssh_slave.destroy()
+  ssh_slave.destroy(instance_name)
 }
 
 /* One func entrypoint to run a script on a single use slave */

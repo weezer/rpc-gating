@@ -2,16 +2,13 @@ def prepare() {
   common.conditionalStage(
     stage_name: 'Prepare Multi-Node AIO',
     stage: {
+      common.prepareRpcGit(env.RPC_BRANCH)
+      String osa_commit = common.get_current_git_sha("/opt/rpc-openstack/openstack-ansible")
       dir("openstack-ansible-ops") {
         git url: env.OSA_OPS_REPO, branch: env.OSA_OPS_BRANCH
       }
       dir("openstack-ansible-ops/${env.MULTI_NODE_AIO_DIR}") {
         timeout(time: 45, unit: "MINUTES") {
-          sh """
-          sed -i "s,<memory unit='GiB'>1,<memory unit='GiB'>8," templates/vmnode-config/deploy.openstackci.local.xml
-          sed -i "s,<currentMemory unit='GiB'>1,<currentMemory unit='GiB'>8," templates/vmnode-config/deploy.openstackci.local.xml
-          sed -i "s,<vcpu placement='static'>1,<vcpu placement='static'>10," templates/vmnode-config/deploy.openstackci.local.xml
-          """
           common.run_script(
             script: 'build.sh',
             environment_vars: [
@@ -24,7 +21,7 @@ def prepare() {
               "VM_DISK_SIZE=252",
               "DEFAULT_IMAGE=${env.DEFAULT_IMAGE}",
               "DEFAULT_KERNEL=${env.DEFAULT_KERNEL}",
-              "OSA_BRANCH=${env.OPENSTACK_ANSIBLE_BRANCH}",
+              "OSA_BRANCH=${osa_commit}",
               "SETUP_HOST=true",
               "SETUP_VIRSH_NET=true",
               "VM_IMAGE_CREATE=true",
@@ -32,7 +29,9 @@ def prepare() {
               "PRE_CONFIG_OSA=true",
               "RUN_OSA=false",
               "DATA_DISK_DEVICE=${env.DATA_DISK_DEVICE}",
-              "CONFIG_PREROUTING=false"]
+              "CONFIG_PREROUTING=true",
+              "OSA_PORTS=6080 6082 443 80 8443",
+              ]
           ) //run_script
         } //timeout
       } // dir
@@ -42,7 +41,6 @@ def prepare() {
   common.conditionalStage(
     stage_name: 'Prepare RPC Configs',
     stage: {
-      common.prepareRpcGit(env.RPC_BRANCH)
       common.prepareConfigs(
         deployment_type: "onmetal"
       )
@@ -56,39 +54,31 @@ def prepare() {
       set -xe
       sudo cp /etc/openstack_deploy/user_variables.yml /etc/openstack_deploy/user_variables.yml.bak
       sudo cp -R /opt/rpc-openstack/openstack-ansible/etc/openstack_deploy /etc
+      sudo cp /opt/rpc-openstack/rpcd/etc/openstack_deploy/user_*.yml /etc/openstack_deploy
+      sudo cp /opt/rpc-openstack/rpcd/etc/openstack_deploy/env.d/* /etc/openstack_deploy/env.d
       sudo cp /etc/openstack_deploy/user_variables.yml.bak /etc/openstack_deploy/user_variables.yml
 
-      sudo mv /etc/openstack_deploy/user_secrets.yml /etc/openstack_deploy/user_osa_secrets.yml
-      sudo cp /opt/rpc-openstack/rpcd/etc/openstack_deploy/user_*_defaults.yml /etc/openstack_deploy
-      sudo cp /opt/rpc-openstack/rpcd/etc/openstack_deploy/user_rpco_secrets.yml /etc/openstack_deploy
-      sudo cp /opt/rpc-openstack/rpcd/etc/openstack_deploy/env.d/* /etc/openstack_deploy/env.d
 EOF
       """
     } //stage
   ) //conditionalStage
 }
 
-/*
- * Post-deploy networking configuration
- */
-def multi_node_aio_networking(){
-  common.conditionalStep(
-    step_name: "Deploy RPC w/ Script",
-    step: {
-      dir("openstack-ansible-ops") {
-        git url: env.OSA_OPS_REPO, branch: env.OSA_OPS_BRANCH
-      }
-      dir("openstack-ansible-ops/${env.MULTI_NODE_AIO_DIR}") {
-        common.run_script(
-          script: 'config-deploy-node.sh',
-          environment_vars: [
-            "DEPLOY_OSA=false",
-            "OSA_PORTS=6080 6082 443 80 8443",
-            "CONFIG_PREROUTING=true"]
-        )
-      }
-    }
-  )
+def connect_deploy_node(name, instance_ip) {
+  inventory_content = """
+  [job_nodes:children]
+  hosts
+  [hosts]
+  ${name} ansible_port=2222 ansible_host=${instance_ip}
+  """
+  common.drop_inventory_file(inventory_content)
+  dir("rpc-gating/playbooks"){
+    stash (
+      name: "pubcloud_inventory",
+      include: "inventory/hosts"
+    )
+  }
+  ssh_slave.connect(2222)
 }
 
 return this;

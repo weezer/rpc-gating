@@ -50,16 +50,21 @@ def verify(vm=null) {
   ) //conditionalStage
 }
 
-List get_maas_token_and_url(String username, String api_key, String region) {
-  def token_url = sh (
-    script: """#!/bin/bash
-cd ${env.WORKSPACE}/rpc-gating/scripts
-. ${env.WORKSPACE}/.venv/bin/activate
-./get_maas_token_and_url.py --username ${username} --api-key ${api_key} --region ${region}
-""",
-    returnStdout: true,
-  )
-  return token_url.trim().tokenize(" ")
+List get_maas_token_and_url() {
+  return maas_utils(['get_token_url']).trim().tokenize(" ")
+}
+
+def maas_utils(List args){
+  withCredentials(common.get_cloud_creds()) {
+    return sh (
+      script: """#!/bin/bash
+        cd ${env.WORKSPACE}/rpc-gating/scripts
+        . ${env.WORKSPACE}/.venv/bin/activate
+        ./maasutils.py --username ${env.PUBCLOUD_USERNAME} --api-key ${env.PUBCLOUD_API_KEY} ${args.join(" ")}
+      """,
+      returnStdout: true
+    )
+  }
 }
 
 def entity_cleanup(Map args){

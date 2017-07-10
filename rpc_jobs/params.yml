@@ -1,6 +1,6 @@
 ---
 - parameter:
-    name: single_use_slave_params
+    name: instance_params
     parameters:
       - string:
           name: REGION
@@ -18,6 +18,38 @@
             Set instance name or "AUTO" to have it generated based on job
             name and build number. Beware the 63 char container name limit
             as container names includes the host name.
+- parameter:
+    name: jenkins_node_params
+    parameters:
+      - string:
+          name: JENKINS_NODE_LABELS
+          default: "{JENKINS_NODE_LABELS}"
+          description: |
+            Number of executors to start on each slave
+      - string:
+          name: JENKINS_NODE_EXECUTORS
+          default: "{JENKINS_NODE_EXECUTORS}"
+          description: |
+            Number of executors to start on each slave
+        # Bool param defaults are converted to lower case :(
+        # https://review.openstack.org/#/c/473828/
+      - bool:
+          name: jenkins_node_exclusive
+          default: "{jenkins_node_exclusive}"
+          description: |
+            Create slave in exclusive mode?
+            An exclusive slave will only be used for jobs that specify its
+            name or labels. A non exclusive node will run jobs that don't
+            specify a name or label. eg node(){{}} blocks. Single use slaves
+            should be exclusive, multi use slaves should not.
+      - bool:
+          name: allow_jenkins_sudo
+          default: "{allow_jenkins_sudo}"
+          description: |
+            Grant the jenkins slave passwordless sudo. This is useful for
+            single use slaves, but must not be set for long running
+            slaves as it will allow jobs to pollute the build environment.
+
 
 - parameter:
     name: rpc_repo_params
@@ -38,10 +70,6 @@
       - string:
           name: OSA_OPS_BRANCH
           default: master
-      - string:
-          name: OPENSTACK_ANSIBLE_BRANCH
-          default: "{OPENSTACK_ANSIBLE_BRANCH}"
-          description: Openstack Ansible branch to use in setup
       - string:
           name: DEFAULT_IMAGE
           default: "{DEFAULT_IMAGE}"
@@ -82,6 +110,10 @@
           name: "DEPLOY_ELK"
           default: "{DEPLOY_ELK}"
           description: "Deploy ELK? yes/no"
+      - string:
+          name: "DEPLOY_SUPPORT_ROLE"
+          default: "{DEPLOY_SUPPORT_ROLE}"
+          description: "Deploy support role? yes/no"
       - text:
           name: "USER_VARS"
           default: "{USER_VARS}"
@@ -102,23 +134,34 @@
           default: "master"
 
 - parameter:
-    name: tempest_params
+    name: kibana_selenium_params
     parameters:
       - string:
-          name: "TEMPEST_TEST_SETS"
-          default: "{TEMPEST_TEST_SETS}"
-          description: |
-            Test sets (space seperated). Test sets are defined in
-            https://github.com/openstack/openstack-ansible-os_tempest/blob/master/templates/openstack_tempest_gate.sh.j2
+          name: "KIBANA_SELENIUM_REPO"
+          default: "https://github.com/rcbops-qe/kibana-selenium.git"
       - string:
-          name: "RUN_TEMPEST_OPTS"
-          default: "{RUN_TEMPEST_OPTS}"
-          description: |
-            Options to pass to run_tempest.sh via openstack_tempest_gate.sh. Note that both are deprecated and will be replaced in future.
-            Serial test runner format: --serial
+          name: "KIBANA_SELENIUM_BRANCH"
+          default: "{KIBANA_SELENIUM_BRANCH}"
+
+- parameter:
+    name: rpc_maas_params
+    parameters:
       - string:
-          name: "TESTR_OPTS"
-          default: "{TESTR_OPTS}"
-          description: |
-            Options to pass to run_tempest.sh via openstack_tempest_gate.sh. Note that both are deprecated and will be replaced in future.
-            Concurrent worker format: --concurrency 3
+          name: "RPC_MAAS_REPO"
+          default: "https://github.com/rcbops/rpc-maas"
+      - string:
+          name: "RPC_MAAS_BRANCH"
+          default: "{RPC_MAAS_BRANCH}"
+
+- parameter:
+    name: generate_test_params
+    parameters:
+      - string:
+          name: "GENERATE_TEST_NETWORKS"
+          default: "{GENERATE_TEST_NETWORKS}"
+      - string:
+          name: "GENERATE_TEST_SERVERS"
+          default: "{GENERATE_TEST_SERVERS}"
+      - string:
+          name: "GENERATE_TEST_VOLUMES"
+          default: "{GENERATE_TEST_VOLUMES}"

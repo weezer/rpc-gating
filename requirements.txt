@@ -5,3 +5,9 @@ pyrax
 python-dateutil
 click
 github3.py
+jira
+six
+packaging
+appdirs
+rackspace_monitoring
+PyYAML

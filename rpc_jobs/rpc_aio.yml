@@ -3,22 +3,73 @@
     # Note: branch is the branch for periodics to build
     #       branches is the branch pattern to match for PR Jobs.
     series:
+      - kilo:
+          branch: kilo
+          branches: "kilo.*"
+          # There's no kilo branch on [1], but liberty-12.2 branch seems to
+          # work OK.
+          # [1] https://github.com/rcbops-qe/kibana-selenium.git
+          KIBANA_SELENIUM_BRANCH: "liberty-12.2"
       - liberty:
           branch: liberty-12.2
           branches: "liberty-.*"
       - mitaka:
           branch: mitaka-13.1
           branches: "mitaka-.*"
-      - newton:
+          UPGRADE_FROM_REF: "liberty-12.2"
+      - newton140:
           branch: newton-14.0
-          branches: "newton-.*"
-      - artifacts:
-          branch: artifacts-14.0
-          branches: "artifacts-.*"
+          branches: "newton-14.0.*"
+      - newton141:
+          branch: newton-14.1
+          branches: "newton-14.1.*"
+          UPGRADE_FROM_REF: "kilo"
       - master:
           branch: master
           branches: "master"
-    context:
+    image:
+      - trusty:
+          IMAGE: "Ubuntu 14.04.5 LTS prepared for RPC deployment"
+      - xenial:
+          IMAGE: "Ubuntu 16.04.2 LTS prepared for RPC deployment"
+    action:
+      - deploy:
+          ACTION_STAGES: >-
+            Setup MaaS,
+            Verify MaaS,
+            Install Tempest,
+            Tempest Tests,
+            Prepare Kibana Selenium,
+            Kibana Tests
+      - majorupgrade:
+          ACTION_STAGES: >-
+            Setup MaaS,
+            Verify MaaS,
+            Install Tempest,
+            Tempest Tests,
+            Prepare Kibana Selenium,
+            Kibana Tests,
+            Major Upgrade
+      # A minimum set of stages is chosen deliberately
+      # to test the convergance of the upgrade itself
+      # without additional complexity. Once this is
+      # working well, additional stages may be added.
+      - leapfrogupgrade:
+          ACTION_STAGES: >-
+            Install Tempest,
+            Leapfrog Upgrade
+          GENERATE_TEST_NETWORKS: "6"
+          GENERATE_TEST_SERVERS: "4"
+          GENERATE_TEST_VOLUMES: "12"
+      # A minimum set of stages is chosen deliberately
+      # to test the convergance of the upgrade itself
+      # without additional complexity. Once this is
+      # working well, additional stages may be added.
+      - minorupgrade:
+          ACTION_STAGES: >-
+            Minor Upgrade
+          UPGRADE_FROM_REF: "r14.0.0"
+    scenario:
       - swift
       - ceph:
           DEPLOY_SWIFT: "no"
@@ -30,25 +81,6 @@
                     default_volume_type: ceph
             cinder_service_backup_driver: cinder.backup.drivers.ceph
             tempest_service_available_swift: false
-      - upgrade:
-          STAGES: >-
-            Allocate Resources,
-            Connect Slave,
-            Prepare Deployment,
-            Deploy RPC w/ Script,
-            Setup MaaS,
-            Verify MaaS,
-            Install Tempest,
-            Tempest Tests,
-            Prepare Kibana Selenium,
-            Kibana Tests,
-            Holland,
-            Upgrade,
-            Cleanup,
-            Destroy Slave
-          UPGRADE_FROM_REF: "liberty-12.2"
-      - xenial:
-          IMAGE: "Ubuntu 16.04 LTS (Xenial Xerus) (PVHVM)"
 
     # NOTE: Hugh tested this and found that ztrigger overrides series and
     #       trigger doesn't, which is odd because both trigger and ztrigger
@@ -60,50 +92,102 @@
       - periodic:
           branches: "do_not_build_on_pr"
           NUM_TO_KEEP: 10
+          TRIGGER_STAGES: >-
+            Holland
+          DEPLOY_SUPPORT_ROLE: "yes"
     exclude:
+      # Minor upgrades are only being executed
+      # for newton140->newton141 for now until
+      # the minor upgrade testing process is
+      # stabilised.
+      - series: kilo
+        action: minorupgrade
       - series: liberty
-        context: upgrade
-      - series: newton
-        context: upgrade
-      - series: artifacts
-        context: upgrade
-      - series: master
-        context: upgrade
-      # Xenial builds are run for newton and above.
-      - series: liberty
-        context: xenial
+        action: minorupgrade
       - series: mitaka
-        context: xenial
-      # Artifacts are currently only built for Trusty
-      - series: artifacts
-        context: xenial
-      # An artifacted ceph deployment is not yet supported
-      - series: artifacts
-        context: ceph
+        action: minorupgrade
+      - series: newton140
+        action: minorupgrade
+      - series: master
+        action: minorupgrade
+      # Major upgrades are only run for mitaka
+      # for the moment as no other major upgrade
+      # testing or tooling has been implemented.
+      - series: kilo
+        action: majorupgrade
+      - series: liberty
+        action: majorupgrade
+      - series: newton140
+        action: majorupgrade
+      - series: newton141
+        action: majorupgrade
+      - series: master
+        action: majorupgrade
+      # Xenial builds are run for newton and above
+      # as it is not supported distro before newton.
+      - series: kilo
+        image: xenial
+      - series: liberty
+        image: xenial
+      - series: mitaka
+        image: xenial
+      # Leapfrog upgrades are only run for kilo --> newton141
+      # as the upgrade method is not supported for any
+      # other target series.
+      # the kilo --> newton141 job is triggered by PRs to either branch.
+      - series: liberty
+        action: leapfrogupgrade
+      - series: mitaka
+        action: leapfrogupgrade
+      - series: newton140
+        action: leapfrogupgrade
+      - series: master
+        action: leapfrogupgrade
+      # Leapfrog upgrades cannot be executed on
+      # xenial as it is not possible to install
+      # the source series (kilo-mitaka) on xenial.
+      - image: xenial
+        action: leapfrogupgrade
+      # Ceph builds are not run for kilo at this time
+      # as ceph deployment is not supported for
+      # newton (yet) and the purpose of executing
+      # kilo builds is for the leapfrog upgrade tests.
+      - series: kilo
+        scenario: ceph
+      # Ceph builds are not tested for leapfrog upgrades
+      # at this time due to the failure for ceph to
+      # install on kilo.
+      - action: leapfrogupgrade
+        scenario: ceph
+      # Ceph builds are not run for Xenial at this time
+      # as ceph deployment is not supported for
+      # newton (yet).
+      - image: xenial
+        scenario: ceph
+      # Trusty builds are not executed for master
+      # as Trusty is not a supported distro for
+      # Ocata onwards.
+      - series: master
+        image: trusty
     jobs:
-      - 'RPC-AIO_{series}-{context}-{ztrigger}'
+      - 'RPC-AIO_{series}-{image}-{action}-{scenario}-{ztrigger}'
 
 - job-template:
     # DEFAULTS
-    STAGES: >-
+    DEFAULT_STAGES: >-
       Allocate Resources,
       Connect Slave,
       Prepare Deployment,
       Deploy RPC w/ Script,
-      Setup MaaS,
-      Verify MaaS,
-      Install Tempest,
-      Tempest Tests,
-      Prepare Kibana Selenium,
-      Kibana Tests,
-      Holland,
       Cleanup,
       Destroy Slave
+    ACTION_STAGES: ""
+    TRIGGER_STAGES: ""
     branch: master
     NUM_TO_KEEP: 30
-
+    IMAGE: "Ubuntu 14.04.5 LTS prepared for RPC deployment"
     # TEMPLATE
-    name: 'RPC-AIO_{series}-{context}-{ztrigger}'
+    name: 'RPC-AIO_{series}-{image}-{action}-{scenario}-{ztrigger}'
     project-type: workflow
     concurrent: true
     properties:
@@ -112,29 +196,28 @@
       - rpc-openstack-github
     parameters:
       # See params.yml
+      - kibana_selenium_params:
+         KIBANA_SELENIUM_BRANCH: "{branch}"
       - rpc_repo_params:
          RPC_BRANCH: "{branch}"
       - rpc_deploy_params:
          DEPLOY_SWIFT: "{DEPLOY_SWIFT}"
          DEPLOY_CEPH: "{DEPLOY_CEPH}"
          DEPLOY_ELK: "{DEPLOY_ELK}"
+         DEPLOY_SUPPORT_ROLE: "{DEPLOY_SUPPORT_ROLE}"
          USER_VARS: |
            {CONTEXT_USER_VARS}
            {SERIES_USER_VARS}
            {TRIGGER_USER_VARS}
          UPGRADE_FROM_REF: "{UPGRADE_FROM_REF}"
       - rpc_gating_params
-      - single_use_slave_params:
+      - instance_params:
          IMAGE: "{IMAGE}"
          FLAVOR: "{FLAVOR}"
          REGION: "{REGION}"
-      - tempest_params:
-         TEMPEST_TEST_SETS: "scenario defcore cinder_backup"
-         RUN_TEMPEST_OPTS: "--serial"
-         TESTR_OPTS: ""
       - string:
           name: STAGES
-          default: "{STAGES}"
+          default: "{DEFAULT_STAGES}, {ACTION_STAGES}, {TRIGGER_STAGES}"
           description: |
             Pipeline stages to run CSV. Note that this list does not influence execution order.
             Options:
@@ -149,29 +232,43 @@
               Prepare Kibana Selenium
               Kibana Tests
               Holland (test holland mysql backup)
-              Upgrade
+              Minor Upgrade
+              Major Upgrade
+              Leapfrog Upgrade
               Pause (use to hold instance for investigation before cleanup)
               Cleanup
               Destroy Slave
+      - generate_test_params:
+          GENERATE_TEST_NETWORKS: "{GENERATE_TEST_NETWORKS}"
+          GENERATE_TEST_SERVERS: "{GENERATE_TEST_SERVERS}"
+          GENERATE_TEST_VOLUMES: "{GENERATE_TEST_VOLUMES}"
     triggers:
       - timed: "{CRON}"
       - github-pull-request:
           org-list:
             - rcbops
           github-hooks: true
-          trigger-phrase: '.*recheck_cit_all.*|.*recheck_cit_{context}.*'
+          trigger-phrase: '.*recheck_cit_all.*|.*recheck_cit_{image}_{action}_{scenario}.*'
           only-trigger-phrase: false
           white-list-target-branches:
             - "{branches}"
           auth-id: "github_account_rpc_jenkins_svc"
-          status-context: 'CIT/{context}'
+          status-context: 'CIT/{image}-{action}-{scenario}'
           cancel-builds-on-update: true
 
     dsl: |
       // CIT Slave node
+      currentBuild.result = 'SUCCESS'
+      // pass JJB axes through to environment
+      env.SCENARIO = "{scenario}"
+      env.TRIGGER = "{ztrigger}"
+      env.TARGET = "aio"
+      env.ACTION = "{action}"
+      env.SERIES = "{series}"
       timeout(time: 8, unit: 'HOURS'){{
         node() {{
-          dir("rpc-gating") {{
+          try {{
+            dir("rpc-gating") {{
               git branch: env.RPC_GATING_BRANCH, url: env.RPC_GATING_REPO
               common = load 'pipeline_steps/common.groovy'
               pubcloud = load 'pipeline_steps/pubcloud.groovy'
@@ -181,55 +278,75 @@
               holland = load 'pipeline_steps/holland.groovy'
               maas = load 'pipeline_steps/maas.groovy'
               kibana = load 'pipeline_steps/kibana.groovy'
-          }}
-          // We need to checkout the rpc-openstack repo on the CIT Slave
-          // so that we can cater for builds on the more restricted images
-          // used for artifact-based builds.
-          if (env.STAGES.contains("Upgrade")) {{
-            common.prepareRpcGit(env.UPGRADE_FROM_REF, env.WORKSPACE)
-          }} else {{
-            common.prepareRpcGit("auto", env.WORKSPACE)
-          }} // if
-          if(common.is_doc_update_pr("${{env.WORKSPACE}}/rpc-openstack")){{
-            return
-          }}
-          pubcloud.runonpubcloud {{
-            // try within pubcloud node so we can archive archive_artifacts
-            // after a failure, before the node is cleaned up.
-            try {{
-              environment_vars = [
-                "DEPLOY_HAPROXY=yes",
-                "DEPLOY_AIO=no",
-                "DEPLOY_MAAS=no",
-                "DEPLOY_TEMPEST=no",
-                "DEPLOY_SWIFT=${{DEPLOY_SWIFT}}",
-                "DEPLOY_CEPH=${{DEPLOY_CEPH}}",
-                "DEPLOY_ELK=${{DEPLOY_ELK}}",
-                ]
-              aio_prepare.prepare()
-              deploy.deploy_sh(environment_vars: environment_vars)
-              deploy.addChecksumRule()
-              maas.deploy()
-              maas.verify()
-              tempest.tempest()
-              kibana_branch = env.UPGRADE_FROM_REF ?: env.RPC_BRANCH
-              kibana.kibana(kibana_branch)
-              holland.holland()
-              if (env.STAGES.contains("Upgrade")) {{
-                deploy.upgrade(environment_vars: environment_vars)
-                deploy.addChecksumRule()
+            }}
+            // prepare vars for leapfrog upgrade test of changes proposed to kilo
+            // this is a special case as we only usually test upgrades on
+            // changes to the destination branch.
+            if (env.SERIES == "kilo"
+                && env.TRIGGER == "pr"
+                && env.ACTION == "leapfrogupgrade" ){{
+                env.UPGRADE_FROM_REF="origin/pr/${{env.ghprbPullId}}/merge"
+            }}
+            // We need to checkout the rpc-openstack repo on the CIT Slave
+            // so that we can check whether the patch is a docs-only patch
+            // before allocating resources unnecessarily.
+            if (env.STAGES.contains("Minor Upgrade")
+                || env.STAGES.contains("Major Upgrade")
+                || env.STAGES.contains("Leapfrog Upgrade")) {{
+              common.prepareRpcGit(env.UPGRADE_FROM_REF, env.WORKSPACE)
+            }} else {{
+              common.prepareRpcGit("auto", env.WORKSPACE)
+            }}
+            if(common.is_doc_update_pr("${{env.WORKSPACE}}/rpc-openstack")){{
+              return
+            }}
+            pubcloud.runonpubcloud {{
+              // try within pubcloud node so we can archive archive_artifacts
+              // after a failure, before the node is cleaned up.
+              try {{
+                environment_vars = [
+                  "DEPLOY_HAPROXY=yes",
+                  "DEPLOY_AIO=no",
+                  "DEPLOY_MAAS=no",
+                  "DEPLOY_TEMPEST=no",
+                  "DEPLOY_SWIFT=${{DEPLOY_SWIFT}}",
+                  "DEPLOY_CEPH=${{DEPLOY_CEPH}}",
+                  "DEPLOY_ELK=${{DEPLOY_ELK}}",
+                  "DEPLOY_SUPPORT_ROLE=${{DEPLOY_SUPPORT_ROLE}}",
+                  ]
+                aio_prepare.prepare()
+                deploy.deploy_sh(environment_vars: environment_vars)
                 maas.deploy()
                 maas.verify()
                 tempest.tempest()
-                kibana.kibana(env.RPC_BRANCH)
+                // TODO(odyssey4me):
+                // Adjust this if selenium tests are ever used for minor/leapfrog upgrades
+                kibana_branch = env.STAGES.contains("Major Upgrade") ? env.UPGRADE_FROM_REF : env.KIBANA_SELENIUM_BRANCH
+                kibana.kibana(kibana_branch)
                 holland.holland()
+                if (env.STAGES.contains("Minor Upgrade")) {{
+                  deploy.upgrade_minor(environment_vars: environment_vars)
+                }} else if (env.STAGES.contains("Major Upgrade")) {{
+                  deploy.upgrade_major(environment_vars: environment_vars)
+                  maas.deploy()
+                  maas.verify()
+                  tempest.tempest()
+                  kibana.kibana(env.KIBANA_SELENIUM_BRANCH)
+                  holland.holland()
+                }} else if (env.STAGES.contains("Leapfrog Upgrade")) {{
+                  deploy.upgrade_leapfrog(environment_vars: environment_vars)
+                }}
+              }} catch (e) {{
+                print(e)
+                currentBuild.result = 'FAILURE'
+                throw e
+              }} finally {{
+                common.archive_artifacts()
+                common.safe_jira_comment("${{currentBuild.result}}: [${{env.BUILD_TAG}}|${{env.BUILD_URL}}]")
               }}
-            }} catch (e) {{
-              print(e)
-              throw e
-            }} finally {{
-              common.archive_artifacts()
-            }}
-          }} //pubcloud slave
+            }} //pubcloud slave
+          }} finally {{
+            common.delete_workspace()
+          }}
         }} // cit node
       }} // timeout

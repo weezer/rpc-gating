@@ -8,6 +8,7 @@ fargs=(. -not -path \*${venv}\* -not -path \*.git\*)
 trap cleanup EXIT
 cleanup(){
   type -t deactivate >/dev/null && deactivate
+  rm -f lint_jjb.ini
 }
 install(){
   which virtualenv >/dev/null \
@@ -24,7 +25,9 @@ check_jjb(){
     || { echo "jenkins-jobs unavailble, please install jenkins-job-builder from pip"
          return
        }
-  jenkins-jobs test -r rpc_jobs >/dev/null \
+  # work around for ip6 issues in docker image used for gating UG-652
+  echo -e "[jenkins]\nurl=http://127.0.0.1:8080" > lint_jjb.ini
+  jenkins-jobs --conf lint_jjb.ini test -r rpc_jobs >/dev/null \
     && echo "JJB Syntax ok" \
     || { echo "JJB Syntax fail"; rc=1; }
 }
@@ -77,10 +80,31 @@ check_bash(){
   done < <(find ${fargs[@]} -iname \*.sh)
 }
 
+check_naming_standards() {
+  # Limits lint to only gating unique files
+  # Excludes webhooktranslator as it has additional packaging
+  # and it's own tox
+  # Excludes NonCPS.groovy as this filename is required, but
+  # not matching rpc-gating conventions
+  dirs_to_lint="pipeline_steps,rpc_jobs,scripts"
+  exclude_files="NonCPS.groovy"
+  python scripts/lint_naming_conventions.py \
+    --dirs ${dirs_to_lint} --exclude ${exclude_files} \
+    && echo "Naming conventions: OK" \
+    || { echo "Naming conventions: FAIL"; rc=1; }
+}
+
 check_python(){
-  flake8 --exclude=.lintvenv . \
+  flake8 --exclude=.lintvenv,webhooktranslator . \
     && echo "Python syntax ok" \
     || { echo "Python syntax fail"; rc=1; }
+}
+
+check_webhooktranslator(){
+    pushd webhooktranslator
+    tox && echo "Webhook Translator Unit tests pass" \
+      || { echo "Webhook Translator Unit tests fail"; rc=1; }
+    popd
 }
 
 [[ ${RPC_GATING_LINT_USE_VENV:-yes} == yes ]] && install
@@ -89,6 +113,8 @@ check_groovy
 check_ansible
 check_bash
 check_python
+check_naming_standards
+check_webhooktranslator
 
 if [[ $rc == 0 ]]
 then
